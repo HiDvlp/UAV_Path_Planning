@@ -212,7 +212,7 @@ class VoxelAStarPlanner:
             cx, cy, cz = current
             nx_bound, ny_bound, nz_bound = self.grid_shape
 
-            for (dx, dy, dz), step_cost in zip(self._neighbor_offsets, self._neighbor_costs):
+            for (dx, dy, dz), geom_cost in zip(self._neighbor_offsets, self._neighbor_costs):
                 nx_, ny_, nz_ = cx + dx, cy + dy, cz + dz
                 if not (0 <= nx_ < nx_bound and
                         0 <= ny_ < ny_bound and
@@ -221,6 +221,12 @@ class VoxelAStarPlanner:
                 nb = (nx_, ny_, nz_)
                 if nb in closed or not self.safe_grid[nb]:
                     continue
+
+                # 高度代价（论文公式5）：偏好低空 + 偏好平稳高度
+                nb_z      = self.origin[2] + nz_ * self.voxel_size
+                alt_cost  = (Config.WEIGHT_ALT_MEAN * nb_z +
+                             Config.WEIGHT_ALT_VAR  * abs(dz) * self.voxel_size)
+                step_cost = geom_cost + alt_cost
 
                 tent_g = g_score[current] + step_cost
                 if nb not in g_score or tent_g < g_score[nb]:
@@ -334,6 +340,21 @@ def _smooth_catmull_rom(path: np.ndarray, pts_per_seg: int = 20) -> np.ndarray:
     return np.vstack(pieces)
 
 
+def _altitude_cost(trajectory: list) -> tuple:
+    """
+    按论文公式(5)计算单机完整轨迹的高度代价及分量：
+        J_altitude = h1 * ȳ + h2 * Var(y)
+    其中 ȳ 为所有 setpoint 的平均高度，Var(y) 为高度方差。
+
+    :return: (J_altitude, z_mean, z_var)
+    """
+    zs     = np.array([row[3] for row in trajectory], dtype=float)
+    z_mean = float(np.mean(zs))
+    z_var  = float(np.mean((zs - z_mean) ** 2))
+    j_alt  = Config.WEIGHT_ALT_MEAN * z_mean + Config.WEIGHT_ALT_VAR * z_var
+    return j_alt, z_mean, z_var
+
+
 # ============================================================
 # Layer 3: UAVTrajectoryPlanner
 # ============================================================
@@ -429,8 +450,11 @@ class UAVTrajectoryPlanner:
             hover_secs=2.0, base_type="LAND"
         )
 
+        j_alt, z_mean, z_var = _altitude_cost(trajectory)
         print(f"  [UAV {uav_id}] 轨迹构建完毕！"
               f"总时长: {current_time:.1f}s | Setpoint 数: {len(trajectory)}")
+        print(f"  [UAV {uav_id}] J_altitude = {j_alt:.4f}  "
+              f"(均值 ȳ={z_mean:.3f}m  方差 Var={z_var:.3f}m²)")
         return trajectory
 
     # ── 工具：悬停段生成 ────────────────────────────────────────

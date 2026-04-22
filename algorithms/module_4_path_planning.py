@@ -44,7 +44,7 @@ class MultiUAVPlanner:
         pi = all_pts[:, None, :]                                           # (M, 1, 3)
         pj = all_pts[None, :, :]                                           # (1, M, 3)
         d_eucl = np.linalg.norm(pi - pj, axis=-1)                         # (M, M)
-        d_z    = np.maximum(pj[..., 2] - pi[..., 2], 0.0) * Config.WEIGHT_CLIMB
+        d_z    = np.abs(pj[..., 2] - pi[..., 2]) * Config.WEIGHT_CLIMB
         yaw_diff = all_yaws[None, :] - all_yaws[:, None]
         d_yaw  = np.abs((yaw_diff + np.pi) % (2 * np.pi) - np.pi) * Config.WEIGHT_TURN
         dist_int = ((d_eucl + d_z + d_yaw) * 1000).astype(int)            # OR-Tools 需要整数
