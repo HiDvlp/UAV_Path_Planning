@@ -18,7 +18,7 @@ import time
 import os
 import csv
 
-from config import Config
+from .config import Config
 
 
 # ============================================================

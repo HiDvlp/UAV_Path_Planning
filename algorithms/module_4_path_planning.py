@@ -1,10 +1,11 @@
+import os
 import numpy as np
 import open3d as o3d
 import time
 from sklearn.cluster import KMeans
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
-from config import Config
+from .config import Config
 
 class MultiUAVPlanner:
     def __init__(self, viewpoints, takeoff_points):
@@ -75,17 +76,17 @@ class MultiUAVPlanner:
             index = solution.Value(routing.NextVar(index))
         return route
 
-    def plan(self, mesh):
+    def plan(self, mesh, output_dir="."):
         subsets = self._cluster_tasks()
         all_uav_routes = []
-        
+
         # 阶段 1：直线拓扑排序
         print("\n[阶段 1] 正在进行拓扑排序与直线可视化...")
         line_points = []
         for i, v_indices in enumerate(subsets):
             print(f" -> 规划 UAV {i+1} 的路径...")
             route_indices = self._solve_tsp(self.takeoff_points[i], v_indices)
-            
+
             # 完整航点序列：起飞点 -> 视点 -> 回到起飞点
             full_route_pts = np.vstack([
                 self.takeoff_points[i],
@@ -95,7 +96,8 @@ class MultiUAVPlanner:
             all_uav_routes.append((full_route_pts, self.yaws[route_indices]))
             line_points.append(full_route_pts)
 
-        self._visualize_and_export(mesh, line_points, "4_topo_lines.ply")
+        ply_path = os.path.join(output_dir, "4_topo_lines.ply")
+        self._visualize_and_export(mesh, line_points, ply_path)
 
         return all_uav_routes
 

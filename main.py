@@ -19,12 +19,12 @@ import time
 import numpy as np
 import open3d as o3d
 
-from config import Config
-from module_1_preprocessing import load_and_preprocess_mesh
-from module_2_viewpoint import ViewpointGenerator
-from module_3_set_cover import QualityAwareSetCover
-from module_4_path_planning import MultiUAVPlanner
-from module_5_trajectory_optimization import (
+from algorithms.config import Config
+from algorithms.module_1_preprocessing import load_and_preprocess_mesh
+from algorithms.module_2_viewpoint import ViewpointGenerator
+from algorithms.module_3_set_cover import QualityAwareSetCover
+from algorithms.module_4_path_planning import MultiUAVPlanner
+from algorithms.module_5_trajectory_optimization import (
     CollisionChecker,
     VoxelAStarPlanner,
     UAVTrajectoryPlanner,
@@ -32,9 +32,10 @@ from module_5_trajectory_optimization import (
     export_trajectories_ply,
 )
 
-CHECKPOINT_DIR = "checkpoints"
-STL_INPUT      = "airplane_aligned.stl"
-STL_PROCESSED  = "airplane_preprocessed.stl"
+CHECKPOINT_DIR = "output/checkpoints"
+VIZ_DIR        = "output/visualizations"
+STL_INPUT      = "data/airplane_aligned.stl"
+STL_PROCESSED  = "output/visualizations/airplane_preprocessed.stl"
 
 STAGE_NAMES = {
     1: "网格预处理 & 特征点提取",
@@ -85,7 +86,7 @@ def list_checkpoints() -> None:
         name = STAGE_NAMES[s]
         if s == 5:
             # 阶段 5 直接写入 CSV/PLY，无中间检查点
-            csv_dir = "trajectories"
+            csv_dir = "output/trajectories"
             exists = os.path.isdir(csv_dir) and any(
                 f.endswith(".csv") for f in os.listdir(csv_dir)
             ) if os.path.isdir(csv_dir) else False
@@ -142,6 +143,7 @@ def run_stage_1() -> dict:
     输出 : pts (N,3), norms (N,3)
     副产品: airplane_preprocessed.stl
     """
+    os.makedirs(VIZ_DIR, exist_ok=True)
     mesh, pts, norms, _ = load_and_preprocess_mesh(STL_INPUT, STL_PROCESSED)
     return {"pts": pts, "norms": norms}
 
@@ -188,8 +190,10 @@ def run_stage_3(valid_viewpoints: np.ndarray, coverage_dict: dict) -> dict:
     pcd.colors = o3d.utility.Vector3dVector(
         np.tile([1.0, 0.65, 0.0], (len(final_waypoints), 1))
     )
-    o3d.io.write_point_cloud("3_final_waypoints.ply", pcd)
-    print("  已保存: 3_final_waypoints.ply")
+    os.makedirs(VIZ_DIR, exist_ok=True)
+    ply_out = os.path.join(VIZ_DIR, "3_final_waypoints.ply")
+    o3d.io.write_point_cloud(ply_out, pcd)
+    print(f"  已保存: {ply_out}")
 
     return {"final_waypoints": final_waypoints}
 
@@ -203,7 +207,7 @@ def run_stage_4(final_waypoints: np.ndarray) -> dict:
     """
     mesh, _ = _load_processed_mesh()
     planner  = MultiUAVPlanner(final_waypoints, Config.TAKEOFF_POINTS)
-    all_routes = planner.plan(mesh)
+    all_routes = planner.plan(mesh, output_dir=VIZ_DIR)
     print(f"  [阶段 4 完成] {len(all_routes)} 架无人机的初始航线已生成。")
     return {"all_routes": all_routes}
 
@@ -225,9 +229,10 @@ def run_stage_5(all_routes: list) -> None:
         full_yaws  = np.concatenate([[0.0], route_yaws, [0.0]])
         trajectory = traj_planner.build_trajectory(uav_id, route_pts, full_yaws)
         all_trajectories.append(trajectory)
-        export_trajectory_csv(uav_id, trajectory, output_dir="trajectories")
+        export_trajectory_csv(uav_id, trajectory, output_dir="output/trajectories")
 
-    export_trajectories_ply(all_trajectories, "5_final_trajectories.ply")
+    os.makedirs(VIZ_DIR, exist_ok=True)
+    export_trajectories_ply(all_trajectories, os.path.join(VIZ_DIR, "5_final_trajectories.ply"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -299,8 +304,8 @@ def run_pipeline(from_stage: int = 1, to_stage: int = 5) -> None:
         print(f"  检查点已保存，继续运行请执行：")
         print(f"    python main.py --from-stage {next_s}")
     else:
-        print(f"  轨迹 CSV: trajectories/uav_{{1-{Config.NUM_UAVS}}}_trajectory.csv")
-        print(f"  可视化:  5_final_trajectories.ply")
+        print(f"  轨迹 CSV: output/trajectories/uav_{{1-{Config.NUM_UAVS}}}_trajectory.csv")
+        print(f"  可视化:  output/visualizations/5_final_trajectories.ply")
     print(f"{'='*64}\n")
 
 

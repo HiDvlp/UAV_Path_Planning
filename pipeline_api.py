@@ -39,12 +39,12 @@ import open3d as o3d
 # 确保工作目录为脚本所在的项目根目录（import 时自动执行）
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-from config import Config
-from module_1_preprocessing import load_and_preprocess_mesh
-from module_2_viewpoint import ViewpointGenerator
-from module_3_set_cover import QualityAwareSetCover
-from module_4_path_planning import MultiUAVPlanner
-from module_5_trajectory_optimization import (
+from algorithms.config import Config
+from algorithms.module_1_preprocessing import load_and_preprocess_mesh
+from algorithms.module_2_viewpoint import ViewpointGenerator
+from algorithms.module_3_set_cover import QualityAwareSetCover
+from algorithms.module_4_path_planning import MultiUAVPlanner
+from algorithms.module_5_trajectory_optimization import (
     CollisionChecker,
     VoxelAStarPlanner,
     UAVTrajectoryPlanner,
@@ -53,11 +53,12 @@ from module_5_trajectory_optimization import (
 )
 
 # ── 路径常量 ──────────────────────────────────────────────────────────────────
-_CKPT_DIR     = "checkpoints"
-_SNAP_DIR     = "snapshots"
-_STL_INPUT    = "airplane_aligned.stl"
-_STL_PROC     = "airplane_preprocessed.stl"
-_CSV_DIR      = "trajectories"
+_CKPT_DIR     = "output/checkpoints"
+_SNAP_DIR     = "output/snapshots"
+_VIZ_DIR      = "output/visualizations"
+_STL_INPUT    = "data/airplane_aligned.stl"
+_STL_PROC     = "output/visualizations/airplane_preprocessed.stl"
+_CSV_DIR      = "output/trajectories"
 
 _STAGE_NAMES = {
     1: "网格预处理 & 特征点提取",
@@ -164,6 +165,7 @@ def stage1(force: bool = False) -> dict:
     if not force and _exists(1):
         return _load(1)
     t0 = time.time()
+    os.makedirs(_VIZ_DIR, exist_ok=True)
     _, pts, norms, _ = load_and_preprocess_mesh(_STL_INPUT, _STL_PROC)
     _save(1, {"pts": pts, "norms": norms})
     print(f"  耗时: {time.time()-t0:.1f}s")
@@ -224,7 +226,8 @@ def stage3(force: bool = False, quality_threshold: float = 0.85) -> dict:
     pcd.colors = o3d.utility.Vector3dVector(
         np.tile([1.0, 0.65, 0.0], (len(fwp), 1))
     )
-    o3d.io.write_point_cloud("3_final_waypoints.ply", pcd)
+    os.makedirs(_VIZ_DIR, exist_ok=True)
+    o3d.io.write_point_cloud(os.path.join(_VIZ_DIR, "3_final_waypoints.ply"), pcd)
     _save(3, {"final_waypoints": fwp})
     print(f"  精选航点: {len(fwp)}  耗时: {time.time()-t0:.1f}s")
     return _cache[3]
@@ -248,7 +251,7 @@ def stage4(force: bool = False) -> dict:
     mesh, _ = _load_mesh()
     t0   = time.time()
     planner = MultiUAVPlanner(d3["final_waypoints"], Config.TAKEOFF_POINTS)
-    routes  = planner.plan(mesh)
+    routes  = planner.plan(mesh, output_dir=_VIZ_DIR)
     _save(4, {"all_routes": routes})
     print(f"  {len(routes)} 架无人机路线已生成  耗时: {time.time()-t0:.1f}s")
     return _cache[4]
@@ -275,7 +278,8 @@ def stage5(force: bool = False) -> list:
         traj      = tp.build_trajectory(uid, rpts, full_yaws)
         trajs.append(traj)
         export_trajectory_csv(uid, traj, output_dir=_CSV_DIR)
-    export_trajectories_ply(trajs, "5_final_trajectories.ply")
+    os.makedirs(_VIZ_DIR, exist_ok=True)
+    export_trajectories_ply(trajs, os.path.join(_VIZ_DIR, "5_final_trajectories.ply"))
     print(f"  耗时: {time.time()-t0:.1f}s")
     return trajs
 
@@ -333,9 +337,10 @@ def status() -> None:
             if os.path.isdir(_CSV_DIR) else [])
     status5 = f"✅  {_CSV_DIR}/  ({len(csvs)} 个 CSV)" if csvs else "⬜  未生成"
     print(f"  {status5}  阶段5  {_STAGE_NAMES[5]}")
-    plys = sorted(f for f in os.listdir(".") if f.endswith(".ply"))
-    if plys:
-        print(f"\n  PLY 文件: {', '.join(plys)}")
+    if os.path.isdir(_VIZ_DIR):
+        plys = sorted(f for f in os.listdir(_VIZ_DIR) if f.endswith(".ply"))
+        if plys:
+            print(f"\n  PLY 文件 ({_VIZ_DIR}/): {', '.join(plys)}")
     print(f"{'─'*60}\n")
 
 
@@ -474,10 +479,10 @@ def set_config(**kwargs) -> None:
 def reset_config() -> None:
     """重新加载 config.py，将全部参数恢复为文件中的默认值。"""
     import importlib
-    import config as _cfg
+    import algorithms.config as _cfg
     importlib.reload(_cfg)
     # 让 Config 指向重新加载后的类
-    from config import Config as _NewConfig
+    from algorithms.config import Config as _NewConfig
     for k, v in vars(_NewConfig).items():
         if not k.startswith("_") and not callable(v):
             setattr(Config, k, v)

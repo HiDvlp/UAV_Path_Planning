@@ -3,7 +3,7 @@ import numpy as np
 import open3d as o3d
 import time
 import scipy.spatial
-from config import Config
+from .config import Config
 
 class ViewpointGenerator:
     # ⚠️ 注意：为了获取真实的物理面积，构造函数新增了 `mesh` 参数
