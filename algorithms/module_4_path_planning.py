@@ -102,7 +102,7 @@ class MultiUAVPlanner:
         return all_uav_routes
 
     def _visualize_and_export(self, mesh, paths, filename):
-        “””将多架无人机的拓扑路径转化为高密度彩色点云并导出为 PLY。”””
+        """将多架无人机的拓扑路径转化为高密度彩色点云并导出为 PLY。"""
         COLORS = [
             [0.0, 1.0, 1.0],   # UAV 1: 荧光青
             [1.0, 0.2, 0.8],   # UAV 2: 亮洋红
@@ -132,4 +132,4 @@ class MultiUAVPlanner:
         pcd.points = o3d.utility.Vector3dVector(np.vstack(all_pts_list))
         pcd.colors = o3d.utility.Vector3dVector(np.vstack(all_cols_list))
         o3d.io.write_point_cloud(filename, pcd)
-        print(f” 已导出: {filename}”)
+        print(f" 已导出: {filename}")

@@ -1,0 +1,13 @@
+__pycache__/
+**/__pycache__/
+*.pyc
+
+output/checkpoints/*
+output/snapshots/*
+output/trajectories/*
+output/visualizations/*
+
+!output/checkpoints/.gitkeep
+!output/snapshots/.gitkeep
+!output/trajectories/.gitkeep
+!output/visualizations/.gitkeep
