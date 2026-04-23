@@ -355,6 +355,25 @@ def _altitude_cost(trajectory: list) -> tuple:
     return j_alt, z_mean, z_var
 
 
+def build_smooth_path(
+    astar_planner: VoxelAStarPlanner,
+    route_pts: np.ndarray,
+) -> np.ndarray:
+    """
+    对完整航线做逐段 A* 规划 + Catmull-Rom 平滑，返回拼接后的空间几何路径。
+    :param route_pts: (N, 3) 完整航点序列（含起飞点首尾）
+    :return: (M, 3) 平滑路径点数组
+    """
+    segments = []
+    for i in range(len(route_pts) - 1):
+        raw_path    = astar_planner.plan(route_pts[i], route_pts[i + 1])
+        smooth_path = _smooth_catmull_rom(raw_path, pts_per_seg=20)
+        if i < len(route_pts) - 2:
+            smooth_path = smooth_path[:-1]
+        segments.append(smooth_path)
+    return np.vstack(segments) if segments else np.asarray(route_pts)
+
+
 # ============================================================
 # Layer 3: UAVTrajectoryPlanner
 # ============================================================

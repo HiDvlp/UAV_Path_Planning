@@ -27,9 +27,7 @@ from algorithms.module_4_path_planning import MultiUAVPlanner
 from algorithms.module_5_trajectory_optimization import (
     CollisionChecker,
     VoxelAStarPlanner,
-    UAVTrajectoryPlanner,
-    export_trajectory_csv,
-    export_trajectories_ply,
+    build_smooth_path,
 )
 
 CHECKPOINT_DIR = "output/checkpoints"
@@ -42,7 +40,7 @@ STAGE_NAMES = {
     2: "候选视点生成 & 覆盖质量评估",
     3: "质量感知集合覆盖优化",
     4: "多机任务分配 & TSP 拓扑排序",
-    5: "避障轨迹优化 & CSV 导出",
+    5: "A* 避障 & Catmull-Rom 几何路径平滑",
 }
 
 
@@ -85,12 +83,8 @@ def list_checkpoints() -> None:
     for s in range(1, 6):
         name = STAGE_NAMES[s]
         if s == 5:
-            # 阶段 5 直接写入 CSV/PLY，无中间检查点
-            csv_dir = "output/trajectories"
-            exists = os.path.isdir(csv_dir) and any(
-                f.endswith(".csv") for f in os.listdir(csv_dir)
-            ) if os.path.isdir(csv_dir) else False
-            status = "✅ CSV 已输出" if exists else "❌ 未运行"
+            exists = os.path.exists(_ckpt_path(4))
+            status = "✅ 阶段4路线已就绪（可运行阶段5）" if exists else "❌ 需先运行阶段4"
             print(f"  阶段 5 [{name}]: {status}")
             continue
         path = _ckpt_path(s)
@@ -212,27 +206,30 @@ def run_stage_4(final_waypoints: np.ndarray) -> dict:
     return {"all_routes": all_routes}
 
 
-def run_stage_5(all_routes: list) -> None:
+def run_stage_5(all_routes: list) -> list:
     """
-    阶段 5：体素 A* 避障 + Catmull-Rom 平滑 + CSV 导出。
+    阶段 5：A* 避障 + Catmull-Rom 平滑，输出各无人机几何路径。
     输入 : all_routes (来自阶段 4)
-    输出 : trajectories/uav_N_trajectory.csv, 5_final_trajectories.ply
+    输出 : list of (smooth_path(M,3), route_yaws(N,))
     """
+    csv_dir = "output/trajectories"
+    if os.path.isdir(csv_dir):
+        removed = [f for f in os.listdir(csv_dir) if f.endswith(".csv")]
+        for f in removed:
+            os.remove(os.path.join(csv_dir, f))
+        if removed:
+            print(f"  [清理] 已删除 {csv_dir}/ 下 {len(removed)} 个旧 CSV 文件。")
+
     mesh, _ = _load_processed_mesh()
-
-    checker      = CollisionChecker(mesh)
-    astar        = VoxelAStarPlanner(checker, mesh)
-    traj_planner = UAVTrajectoryPlanner(checker, astar)
-
-    all_trajectories = []
+    checker = CollisionChecker(mesh)
+    astar   = VoxelAStarPlanner(checker, mesh)
+    results = []
     for uav_id, (route_pts, route_yaws) in enumerate(all_routes, start=1):
-        full_yaws  = np.concatenate([[0.0], route_yaws, [0.0]])
-        trajectory = traj_planner.build_trajectory(uav_id, route_pts, full_yaws)
-        all_trajectories.append(trajectory)
-        export_trajectory_csv(uav_id, trajectory, output_dir="output/trajectories")
-
-    os.makedirs(VIZ_DIR, exist_ok=True)
-    export_trajectories_ply(all_trajectories, os.path.join(VIZ_DIR, "5_final_trajectories.ply"))
+        print(f"  [UAV {uav_id}] 正在规划平滑路径...")
+        smooth = build_smooth_path(astar, route_pts)
+        results.append((smooth, route_yaws))
+        print(f"  [UAV {uav_id}] 路径点数: {len(smooth)}")
+    return results
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -292,7 +289,7 @@ def run_pipeline(from_stage: int = 1, to_stage: int = 5) -> None:
     # ── 阶段 5 ────────────────────────────────────────────────────────────
     if from_stage <= 5 <= to_stage:
         t0 = _print_stage_header(5)
-        run_stage_5(stage_data["all_routes"])
+        stage_data["smooth_paths"] = run_stage_5(stage_data["all_routes"])
         print(f"  [阶段 5 完成] 耗时 {time.time() - t0:.1f}s")
 
     # ── 汇总 ──────────────────────────────────────────────────────────────
@@ -304,8 +301,8 @@ def run_pipeline(from_stage: int = 1, to_stage: int = 5) -> None:
         print(f"  检查点已保存，继续运行请执行：")
         print(f"    python main.py --from-stage {next_s}")
     else:
-        print(f"  轨迹 CSV: output/trajectories/uav_{{1-{Config.NUM_UAVS}}}_trajectory.csv")
-        print(f"  可视化:  output/visualizations/5_final_trajectories.ply")
+        print(f"  各无人机平滑路径已生成（共 {Config.NUM_UAVS} 架），可在 stage_data 中访问。")
+        print(f"  可视化:  output/visualizations/4_topo_lines.ply")
     print(f"{'='*64}\n")
 
 

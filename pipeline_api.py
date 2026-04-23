@@ -11,7 +11,6 @@ pipeline_api.py — UAV 路径规划流水线 统一 API
   ── 状态与结果查看 ────────────────────────────────────
   status()                查看所有检查点和输出文件状态
   summary()               查看各阶段关键结果数字
-  inspect_csv(uav_id=1)   查看轨迹 CSV 统计信息
 
   ── 参数调整 ──────────────────────────────────────────
   show_config()           显示全部配置参数
@@ -29,9 +28,7 @@ import os
 import sys
 import pickle
 import time
-import csv
 import shutil
-from collections import Counter
 
 import numpy as np
 import open3d as o3d
@@ -47,9 +44,7 @@ from algorithms.module_4_path_planning import MultiUAVPlanner
 from algorithms.module_5_trajectory_optimization import (
     CollisionChecker,
     VoxelAStarPlanner,
-    UAVTrajectoryPlanner,
-    export_trajectory_csv,
-    export_trajectories_ply,
+    build_smooth_path,
 )
 
 # ── 路径常量 ──────────────────────────────────────────────────────────────────
@@ -58,14 +53,12 @@ _SNAP_DIR     = "output/snapshots"
 _VIZ_DIR      = "output/visualizations"
 _STL_INPUT    = "data/airplane_aligned.stl"
 _STL_PROC     = "output/visualizations/airplane_preprocessed.stl"
-_CSV_DIR      = "output/trajectories"
-
 _STAGE_NAMES = {
     1: "网格预处理 & 特征点提取",
     2: "候选视点生成 & 覆盖质量评估",
     3: "质量感知集合覆盖优化",
     4: "多机任务分配 & TSP 拓扑排序",
-    5: "避障轨迹优化 & CSV 导出",
+    5: "A* 避障 & Catmull-Rom 几何路径平滑",
 }
 
 # 运行时内存缓存（同一 session 内避免重复从磁盘加载大文件）
@@ -258,30 +251,34 @@ def stage4(force: bool = False) -> dict:
 
 
 def stage5(force: bool = False) -> list:
-    """阶段5：体素A* 避障 + Catmull-Rom 平滑 + 时间参数化 CSV 导出。
+    """阶段5：A* 避障 + Catmull-Rom 平滑，输出各无人机几何路径。
 
     Args:
         force: 传入此参数不影响运行（阶段5无检查点，每次均重新生成）。
     Returns:
-        all_trajectories: list of setpoint sequences
+        list of (smooth_path(M,3), route_yaws(N,)) — 每架无人机一个元组
     """
     _sec(f"阶段5 / 5 : {_STAGE_NAMES[5]}")
-    d4   = _get(4)
+    csv_dir = "output/trajectories"
+    if os.path.isdir(csv_dir):
+        removed = [f for f in os.listdir(csv_dir) if f.endswith(".csv")]
+        for f in removed:
+            os.remove(os.path.join(csv_dir, f))
+        if removed:
+            print(f"  [清理] 已删除 {csv_dir}/ 下 {len(removed)} 个旧 CSV 文件。")
+    d4      = _get(4)
     mesh, _ = _load_mesh()
-    t0   = time.time()
+    t0      = time.time()
     checker = CollisionChecker(mesh)
     astar   = VoxelAStarPlanner(checker, mesh)
-    tp      = UAVTrajectoryPlanner(checker, astar)
-    trajs   = []
+    results = []
     for uid, (rpts, ryaws) in enumerate(d4["all_routes"], start=1):
-        full_yaws = np.concatenate([[0.0], ryaws, [0.0]])
-        traj      = tp.build_trajectory(uid, rpts, full_yaws)
-        trajs.append(traj)
-        export_trajectory_csv(uid, traj, output_dir=_CSV_DIR)
-    os.makedirs(_VIZ_DIR, exist_ok=True)
-    export_trajectories_ply(trajs, os.path.join(_VIZ_DIR, "5_final_trajectories.ply"))
-    print(f"  耗时: {time.time()-t0:.1f}s")
-    return trajs
+        print(f"\n  [UAV {uid}] 正在规划平滑路径...")
+        smooth = build_smooth_path(astar, rpts)
+        results.append((smooth, ryaws))
+        print(f"  [UAV {uid}] 完成，路径点数: {len(smooth)}")
+    print(f"\n  耗时: {time.time()-t0:.1f}s")
+    return results
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -323,9 +320,14 @@ def status() -> None:
     print(f"\n{'─'*60}")
     print("  检查点 & 输出状态")
     print(f"{'─'*60}")
-    for s in range(1, 5):
+    for s in range(1, 6):
         path  = _ckpt_path(s)
         cache = "  [已缓存]" if s in _cache else ""
+        if s == 5:
+            exists = os.path.exists(_ckpt_path(4))
+            tag    = "✅ 阶段4路线已就绪（可运行阶段5）" if exists else "⬜  需先运行阶段4"
+            print(f"  {tag}  阶段5  {_STAGE_NAMES[5]}")
+            continue
         if os.path.exists(path):
             mtime = time.strftime("%m-%d %H:%M", time.localtime(os.path.getmtime(path)))
             mb    = os.path.getsize(path) / 1e6
@@ -333,10 +335,6 @@ def status() -> None:
             print(f"      {path}  {mb:.1f} MB  {mtime}{cache}")
         else:
             print(f"  ⬜ 阶段{s}  {_STAGE_NAMES[s]}  ── 未生成")
-    csvs = ([f for f in os.listdir(_CSV_DIR) if f.endswith(".csv")]
-            if os.path.isdir(_CSV_DIR) else [])
-    status5 = f"✅  {_CSV_DIR}/  ({len(csvs)} 个 CSV)" if csvs else "⬜  未生成"
-    print(f"  {status5}  阶段5  {_STAGE_NAMES[5]}")
     if os.path.isdir(_VIZ_DIR):
         plys = sorted(f for f in os.listdir(_VIZ_DIR) if f.endswith(".ply"))
         if plys:
@@ -347,7 +345,11 @@ def status() -> None:
 def summary() -> None:
     """显示各阶段的关键结果数字（自动从缓存或检查点读取）。"""
     print(f"\n{'─'*52}\n  流水线结果摘要\n{'─'*52}")
-    for s in range(1, 5):
+    for s in range(1, 6):
+        if s == 5:
+            exists = _exists(4)
+            print(f"  阶段5  {'阶段4路线已就绪，可执行 stage5()' if exists else '需先运行阶段4'}")
+            continue
         if not (_exists(s) or s in _cache):
             print(f"  阶段{s}: 尚未运行")
             continue
@@ -373,46 +375,7 @@ def summary() -> None:
                 dist = sum(np.linalg.norm(rpts[j+1]-rpts[j])
                            for j in range(len(rpts)-1))
                 print(f"  阶段4  UAV {i+1}: {n} 个视点  路径 {dist:.1f} m")
-    csvs = ([f for f in os.listdir(_CSV_DIR) if f.endswith(".csv")]
-            if os.path.isdir(_CSV_DIR) else [])
-    if csvs:
-        total = sum(
-            sum(1 for _ in open(os.path.join(_CSV_DIR, f))) - 1
-            for f in csvs
-        )
-        print(f"  阶段5  CSV: {len(csvs)} 个文件  总 setpoint: {total:,} 行")
     print(f"{'─'*52}\n")
-
-
-def inspect_csv(uav_id: int = 1, n_rows: int = 5) -> None:
-    """显示指定无人机轨迹 CSV 的统计信息与前几行内容。
-
-    Args:
-        uav_id: 无人机编号（1 ~ NUM_UAVS）。
-        n_rows: 预览的数据行数（默认 5）。
-    """
-    path = os.path.join(_CSV_DIR, f"uav_{uav_id}_trajectory.csv")
-    if not os.path.exists(path):
-        print(f"文件不存在: {path}\n请先运行 stage5()")
-        return
-    with open(path, newline="") as f:
-        rows = list(csv.reader(f))
-    header, data = rows[0], rows[1:]
-    cnt      = Counter(r[5] for r in data)
-    duration = float(data[-1][0])
-    print(f"\n  UAV {uav_id} 轨迹统计  {'─'*30}")
-    print(f"  文件     : {path}")
-    print(f"  总行数   : {len(data):,}")
-    print(f"  总时长   : {duration:.1f}s  ({duration/60:.1f} min)")
-    print(f"  视点数   : {cnt.get('WAYPOINT_START', 0)}")
-    print(f"\n  setpoint 类型分布:")
-    for t, c in sorted(cnt.items()):
-        print(f"    {t:<24} {c:>6,} 行")
-    print(f"\n  前 {n_rows} 行:")
-    print("  " + ", ".join(header))
-    for r in data[:n_rows]:
-        print("  " + ", ".join(r))
-    print()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
