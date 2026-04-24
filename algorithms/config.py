@@ -50,6 +50,12 @@ class Config:
     WEIGHT_CLIMB = 3.0   # TSP 弧权重：相邻视点间高度变化代价（对称，上升/下降均计入）
     WEIGHT_TURN = 2.0
 
+    # ── MUCS-BSAE 能耗与分配参数 ─────────────────────────────────
+    UAV_BATTERY_CAPACITY    = 1500.0   # 单机电池容量（归一化能量单位）
+    ENERGY_PER_METER_FLIGHT =    1.0   # SEL：每米飞行耗能
+    ENERGY_PER_SECOND_HOVER =    0.5   # STEL：每秒悬停耗能
+    USE_BSAE_ALLOCATION     = True     # True=MUCS-BSAE；False=原KMeans+TSP
+
     # ==========================================
     # 🗺️ 5. Module 5 体素化 A* 规划参数
     # ==========================================
