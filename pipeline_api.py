@@ -278,6 +278,26 @@ def stage5(force: bool = False) -> list:
         results.append((smooth, ryaws))
         print(f"  [UAV {uid}] 完成，路径点数: {len(smooth)}")
     print(f"\n  耗时: {time.time()-t0:.1f}s")
+
+    # 导出可视化 PLY
+    _TRAJ_COLORS = [
+        [0.0, 1.0, 1.0],
+        [1.0, 0.2, 0.8],
+        [1.0, 0.9, 0.0],
+        [1.0, 0.5, 0.0],
+    ]
+    all_pts, all_cols = [], []
+    for uid, (smooth, _) in enumerate(results):
+        c = np.array(_TRAJ_COLORS[uid % len(_TRAJ_COLORS)])
+        all_pts.append(smooth)
+        all_cols.append(np.tile(c, (len(smooth), 1)))
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(np.vstack(all_pts))
+    pcd.colors = o3d.utility.Vector3dVector(np.vstack(all_cols))
+    ply_out = os.path.join(_VIZ_DIR, "5_final_trajectories.ply")
+    o3d.io.write_point_cloud(ply_out, pcd)
+    print(f"  💾 已导出: {ply_out}")
+
     return results
 
 
