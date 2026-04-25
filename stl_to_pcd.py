@@ -5,7 +5,7 @@ import os
 import open3d as o3d
 
 
-def convert(stl_path: str, n_points: int, out_dir: str) -> None:
+def convert(stl_path: str, out_dir: str) -> None:
     print(f"  Processing: {stl_path}")
     mesh = o3d.io.read_triangle_mesh(stl_path)
     mesh.remove_degenerate_triangles()
@@ -14,7 +14,9 @@ def convert(stl_path: str, n_points: int, out_dir: str) -> None:
     mesh.remove_non_manifold_edges()
     mesh.compute_vertex_normals()
 
-    pcd = mesh.sample_points_uniformly(number_of_points=n_points)
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = mesh.vertices
+    pcd.normals = mesh.vertex_normals
 
     stem = os.path.splitext(os.path.basename(stl_path))[0]
     out_path = os.path.join(out_dir, stem + ".pcd")
@@ -23,11 +25,9 @@ def convert(stl_path: str, n_points: int, out_dir: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Convert .stl files in data/ to .pcd")
+    parser = argparse.ArgumentParser(description="Convert .stl files in data/ to .pcd (lossless)")
     parser.add_argument("--data-dir", default="data", help="Directory to scan for .stl files")
     parser.add_argument("--out-dir",  default="data", help="Output directory for .pcd files")
-    parser.add_argument("--n-points", type=int, default=500_000,
-                        help="Number of surface sample points (default: 500000)")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -41,9 +41,9 @@ def main() -> None:
         print(f"No .stl files found in '{args.data_dir}'")
         return
 
-    print(f"Found {len(stl_files)} STL file(s). Sampling {args.n_points:,} pts each.")
+    print(f"Found {len(stl_files)} STL file(s).")
     for f in stl_files:
-        convert(f, args.n_points, args.out_dir)
+        convert(f, args.out_dir)
 
     print("Done.")
 
