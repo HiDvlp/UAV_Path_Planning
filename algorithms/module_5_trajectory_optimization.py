@@ -167,7 +167,8 @@ class VoxelAStarPlanner:
     # ── A* 核心 ─────────────────────────────────────────────────
 
     def _heuristic(self, a: tuple, b: tuple) -> float:
-        return (abs(a[0]-b[0]) + abs(a[1]-b[1]) + abs(a[2]-b[2])) * self.voxel_size
+        dx, dy, dz = a[0]-b[0], a[1]-b[1], a[2]-b[2]
+        return (dx*dx + dy*dy + dz*dz) ** 0.5 * self.voxel_size
 
     def plan(self, start: np.ndarray, goal: np.ndarray) -> np.ndarray:
         """

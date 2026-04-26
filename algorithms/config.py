@@ -10,6 +10,7 @@ class Config:
     MAX_INCIDENCE_ANGLE = 45.0   # 最大允许拍摄入射角 (防止擦边反光/严重畸变)
     PROBE_D_OFFSETS = [0.0, 0.5, 1.0, 1.5, 2.0]  # 距离试探步长
     PROBE_THETAS = [0.0, 15.0, 30.0, 45.0]        # 角度试探步长
+    DIST_SCORE_SIGMA2 = 8.0   # 距离质量分高斯衰减的方差参数 σ²；调大→对距离容忍度更高
 
     # ==========================================
     # 🛡️ 2. 飞行安全与避障参数 (Kinematic / Safety Constraints)
@@ -85,3 +86,37 @@ class Config:
     ANCHOR_LAT = 47.397742
     ANCHOR_LON = 8.545594
     ANCHOR_ALT = 488.0
+
+    # ==========================================
+    # 🗂️ 8. 场景配置文件路径
+    # ==========================================
+    # 换场景时不必改源码：修改 scenes/default_scene.json 后重新 import 即可。
+    # 若指定路径的文件不存在，保持上方默认值不变。
+    SCENE_CONFIG_PATH = "scenes/default_scene.json"
+
+    @classmethod
+    def load_scene(cls, path: str = None) -> None:
+        """从 JSON 文件加载场景参数（起飞点、无人机数量、地理锚点等）。
+
+        Examples:
+            Config.load_scene()                          # 读取默认场景文件
+            Config.load_scene("scenes/hangar_north.json")  # 读取指定场景
+        """
+        import os, json
+        target = path if path is not None else cls.SCENE_CONFIG_PATH
+        if not os.path.exists(target):
+            return
+        with open(target, encoding="utf-8") as f:
+            data = json.load(f)
+        changed = []
+        for k, v in data.items():
+            if k.startswith("_"):
+                continue
+            if hasattr(cls, k):
+                old = getattr(cls, k)
+                setattr(cls, k, v)
+                changed.append((k, old, v))
+        if changed:
+            print(f"[Config] 已从 {target} 加载场景参数:")
+            for k, old, new in changed:
+                print(f"  {k:<28} {str(old):<22} →  {new}")

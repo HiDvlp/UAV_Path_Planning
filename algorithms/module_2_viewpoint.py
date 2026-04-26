@@ -150,111 +150,132 @@ class ViewpointGenerator:
         print(f" -> 提纯后候选视点池: {len(all_vps)} 个。")
 
         # ==========================================
-        # 📷 阶段 2：数字虚拟相机射线阵列评价 (革命性升级)
+        # 📷 阶段 2：向量化批量虚拟相机射线阵列评价
         # ==========================================
         print(f" -> 正在启动高并发视锥射线阵列，计算真实三角面元覆盖与物理质量矩阵...")
         eval_start_t = time.time()
-        coverage_dict = {}
-        tree = scipy.spatial.KDTree(self.points)
-        
-        W = np.array([0.0, 0.0, 1.0]) # 保证 Roll = 0
-        ideal_dist = Config.CAMERA_DISTANCE # 理想焦距，用于 GSD 衰减
-        
-        # O3D 射线未命中时的无效 ID 是 2^32 - 1
+
+        K          = len(all_vps)
+        R          = len(self.dir_cam)
         INVALID_ID = 4294967295
 
-        for i, Vc in enumerate(all_vps):
-            # 获取光轴方向
-            _, nearest_idx = tree.query(Vc)
-            LookAt = self.points[nearest_idx]
-            Z_cam = LookAt - Vc
-            norm_Z = np.linalg.norm(Z_cam)
-            if norm_Z < 1e-5: continue
-            Z_cam /= norm_Z 
-            
-            if np.abs(Z_cam[2]) > 0.999:
-                X_cam = np.array([1.0, 0.0, 0.0])
-            else:
-                X_cam = np.cross(W, Z_cam)
-                X_cam /= np.linalg.norm(X_cam)
-            Y_cam = np.cross(Z_cam, X_cam)
-            
-            # 将归一化射线转换到世界坐标系 (万箭齐发)
-            # dir_world = dir_cam_x * X + dir_cam_y * Y + dir_cam_z * Z
-            D_world = (self.dir_cam[:, 0:1] * X_cam + 
-                       self.dir_cam[:, 1:2] * Y_cam + 
-                       self.dir_cam[:, 2:3] * Z_cam)
-            
-            # 构建并批量发射射线
-            rays = np.zeros((len(D_world), 6), dtype=np.float32)
-            rays[:, :3] = Vc
-            rays[:, 3:] = D_world
-            
-            ans = self.ray_scene.cast_rays(o3d.core.Tensor(rays))
-            hit_ids = ans['primitive_ids'].numpy()
-            hit_dists = ans['t_hit'].numpy()
-            
-            # 过滤掉打向天空的无效射线
-            valid_mask = hit_ids != INVALID_ID
-            if not np.any(valid_mask): continue
-            
-            valid_ids = hit_ids[valid_mask]
-            valid_dists = hit_dists[valid_mask]
-            valid_dirs = D_world[valid_mask]
-            
-            # 提取被击中的【唯一】三角面元，并获取它们对应的那条光线的数据
-            unique_tris, unique_indices = np.unique(valid_ids, return_index=True)
-            dists = valid_dists[unique_indices]
-            dirs = valid_dirs[unique_indices]
-            
-            # 获取这些面元的真实法向，计算入射角余弦值
-            tri_norms = self.tri_normals[unique_tris]
-            cos_inc = np.sum(-dirs * tri_norms, axis=1) # 点积
-            
-            # 入射角红线过滤 (超过 MAX_INCIDENCE_ANGLE 的直接判 0 分不记录)
-            inc_mask = cos_inc >= self.cos_max_inc
-            if not np.any(inc_mask): continue
-            
-            final_tris = unique_tris[inc_mask]
-            final_cos = cos_inc[inc_mask]
-            final_dists = dists[inc_mask]
-            
-            # 获取这些面元的真实物理面积
-            areas = self.tri_areas[final_tris]
-            
-            # 核心：计算 Q(i,j) 质量分数
-            # 1. 角度得分：cos(alpha)
-            # 2. 距离得分：高斯衰减 exp(-(d - D_opt)^2 / 8.0)
-            dist_score = np.exp(-((final_dists - ideal_dist)**2) / 8.0)
-            
-            q_scores = areas * final_cos * dist_score
-            
-            # 组装字典 {tri_id: q_score}
-            # 使用字典推导式，这不仅符合 Module 3 的迭代习惯，还能完美存储连续质量权重
-            coverage_dict[i] = {tri_id: float(score) for tri_id, score in zip(final_tris, q_scores)}
+        # ── ① 批量 KDTree 查询（一次替代 K 次单点查询）────────────────
+        tree = scipy.spatial.KDTree(self.points)
+        _, nearest_idxs = tree.query(all_vps)        # (K,)
+        lookat_pts = self.points[nearest_idxs]        # (K, 3)
 
-        # 剔除未能提供任何有效覆盖的空视点
-        final_valid_vps = []
+        # ── ② 向量化计算所有视点相机坐标系 ────────────────────────────
+        Z_cams  = lookat_pts - all_vps               # (K, 3)
+        norms_z = np.linalg.norm(Z_cams, axis=1)    # (K,)
+        vp_valid = norms_z >= 1e-5
+        Z_cams[vp_valid] /= norms_z[vp_valid, None]
+
+        # 同时算出两种 X 轴备选，再按近竖直与否选择
+        X_from_W  = np.cross([0.0, 0.0, 1.0], Z_cams)   # (K, 3)
+        X_from_e1 = np.cross([1.0, 0.0, 0.0], Z_cams)   # (K, 3)
+        near_vert = np.abs(Z_cams[:, 2]) > 0.999
+        X_raw     = np.where(near_vert[:, None], X_from_e1, X_from_W)   # (K, 3)
+        X_cams    = X_raw / np.maximum(np.linalg.norm(X_raw, axis=1, keepdims=True), 1e-8)
+        Y_cams    = np.cross(Z_cams, X_cams)             # (K, 3)
+
+        # ── ③ 分批射线投射（每批 CHUNK 个视点，控制内存峰值）──────────
+        CHUNK      = 64
+        ideal_dist = Config.CAMERA_DISTANCE
+        sigma2     = Config.DIST_SCORE_SIGMA2
+        coverage_dict_raw = {}
+
+        for chunk_start in range(0, K, CHUNK):
+            chunk_end   = min(chunk_start + CHUNK, K)
+            C           = chunk_end - chunk_start
+            chunk_valid = vp_valid[chunk_start:chunk_end]
+            if not np.any(chunk_valid):
+                continue
+
+            c_vps = all_vps[chunk_start:chunk_end]    # (C, 3)
+            c_X   = X_cams[chunk_start:chunk_end]     # (C, 3)
+            c_Y   = Y_cams[chunk_start:chunk_end]
+            c_Z   = Z_cams[chunk_start:chunk_end]
+
+            # 世界坐标系射线方向 (C, R, 3)
+            D_world = (self.dir_cam[None, :, 0:1] * c_X[:, None, :] +
+                       self.dir_cam[None, :, 1:2] * c_Y[:, None, :] +
+                       self.dir_cam[None, :, 2:3] * c_Z[:, None, :])
+
+            # 拼成 (C*R, 6) 射线张量并批量投射
+            origins = np.repeat(c_vps, R, axis=0)     # (C*R, 3)
+            rays    = np.concatenate(
+                [origins, D_world.reshape(-1, 3)], axis=1
+            ).astype(np.float32)
+
+            ans           = self.ray_scene.cast_rays(o3d.core.Tensor(rays))
+            hit_ids_all   = ans['primitive_ids'].numpy()   # (C*R,)
+            hit_dists_all = ans['t_hit'].numpy()           # (C*R,)
+
+            for j in range(C):
+                if not chunk_valid[j]:
+                    continue
+                vp_idx = chunk_start + j
+                s, e   = j * R, (j + 1) * R
+                hit_ids   = hit_ids_all[s:e]
+                hit_dists = hit_dists_all[s:e]
+                dirs_j    = D_world[j]                    # (R, 3)
+
+                valid_mask = hit_ids != INVALID_ID
+                if not np.any(valid_mask):
+                    continue
+
+                valid_ids   = hit_ids[valid_mask]
+                valid_dists = hit_dists[valid_mask]
+                valid_dirs  = dirs_j[valid_mask]
+
+                unique_tris, uniq_idx = np.unique(valid_ids, return_index=True)
+                dists     = valid_dists[uniq_idx]
+                dirs      = valid_dirs[uniq_idx]
+
+                tri_norms = self.tri_normals[unique_tris]
+                cos_inc   = np.sum(-dirs * tri_norms, axis=1)
+                inc_mask  = cos_inc >= self.cos_max_inc
+                if not np.any(inc_mask):
+                    continue
+
+                final_tris  = unique_tris[inc_mask]
+                final_cos   = cos_inc[inc_mask]
+                final_dists = dists[inc_mask]
+                areas       = self.tri_areas[final_tris]
+
+                dist_score = np.exp(-((final_dists - ideal_dist) ** 2) / sigma2)
+                q_scores   = areas * final_cos * dist_score
+                coverage_dict_raw[vp_idx] = {
+                    int(tid): float(sc) for tid, sc in zip(final_tris, q_scores)
+                }
+
+            if chunk_start % (CHUNK * 8) == 0:
+                print(f"    [{chunk_end / K * 100:5.1f}%] {chunk_end}/{K} 视点已处理")
+
+        # ── ④ 过滤空视点并重新连续编号 ─────────────────────────────────
+        final_valid_vps    = []
         final_coverage_dict = {}
-        for old_idx, tri_scores in coverage_dict.items():
-            if len(tri_scores) > 0:
+        for old_idx in range(K):
+            tri_scores = coverage_dict_raw.get(old_idx)
+            if tri_scores:
                 new_idx = len(final_valid_vps)
                 final_valid_vps.append(all_vps[old_idx])
                 final_coverage_dict[new_idx] = tri_scores
-            
-        final_valid_vps = np.array(final_valid_vps)
-        
-        # ==========================================
-        # 📊 真实物理表面积覆盖率统计
-        # ==========================================
+
+        final_valid_vps = (np.array(final_valid_vps)
+                           if final_valid_vps else np.empty((0, 3)))
+
+        # ── ⑤ 真实物理表面积覆盖率统计 ─────────────────────────────────
         all_covered_tris = set()
         for tri_scores in final_coverage_dict.values():
             all_covered_tris.update(tri_scores.keys())
-            
+
         total_mesh_area = np.sum(self.tri_areas)
-        covered_area = np.sum(self.tri_areas[list(all_covered_tris)])
-        coverage_rate = (covered_area / total_mesh_area) * 100
-        
+        covered_area    = (np.sum(self.tri_areas[list(all_covered_tris)])
+                           if all_covered_tris else 0.0)
+        coverage_rate   = (covered_area / total_mesh_area * 100
+                           if total_mesh_area > 0 else 0.0)
+
         print(f"✔️ 数字相机扫描完毕！耗时: {time.time() - eval_start_t:.2f} 秒")
         print(f"✔️ 提纯后有效视点数: {len(final_valid_vps)}")
         print(f"📊 飞机总表面积: {total_mesh_area:.2f} m² | 实际覆盖面积: {covered_area:.2f} m²")

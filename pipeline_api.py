@@ -40,6 +40,10 @@ import open3d as o3d
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 from algorithms.config import Config
+
+# 启动时自动加载场景配置（若 scenes/default_scene.json 存在）
+Config.load_scene()
+
 from algorithms.module_1_preprocessing import load_and_preprocess_pcd
 from algorithms.module_2_viewpoint import ViewpointGenerator
 from algorithms.module_3_set_cover import QualityAwareSetCover
@@ -564,3 +568,4 @@ def list_snapshots() -> None:
 # ── 加载完成提示 ──────────────────────────────────────────────────────────────
 print("✅ pipeline_api 加载完成。")
 print("   常用指令: run() | status() | summary() | show_config() | help(<函数名>)")
+print("   换场景请编辑 scenes/default_scene.json，然后调用 Config.load_scene()")
