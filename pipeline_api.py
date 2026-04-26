@@ -3,6 +3,9 @@ pipeline_api.py — UAV 路径规划流水线 统一 API
 
 在 Jupyter Notebook 中执行 `from pipeline_api import *` 后即可使用全部函数。
 
+阶段1 说明：从 .pcd 点云出发，经 SHS-Net 有方向法向估计 + Screened Poisson 重建
+网格，再基于 PCA 曲率做自适应降采样，产出 airplane_reconstructed.ply 供下游使用。
+
 函数一览：
   ── 运行控制 ──────────────────────────────────────────
   run("1-5")              完整运行或指定阶段范围
@@ -37,7 +40,7 @@ import open3d as o3d
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 from algorithms.config import Config
-from algorithms.module_1_preprocessing import load_and_preprocess_mesh
+from algorithms.module_1_preprocessing import load_and_preprocess_pcd
 from algorithms.module_2_viewpoint import ViewpointGenerator
 from algorithms.module_3_set_cover import QualityAwareSetCover
 from algorithms.module_4_path_planning import MultiUAVPlanner
@@ -51,8 +54,8 @@ from algorithms.module_5_trajectory_optimization import (
 _CKPT_DIR     = "output/checkpoints"
 _SNAP_DIR     = "output/snapshots"
 _VIZ_DIR      = "output/visualizations"
-_STL_INPUT    = "data/airplane_aligned.stl"
-_STL_PROC     = "output/visualizations/airplane_preprocessed.stl"
+_PCD_INPUT    = "data/airplane_aligned.pcd"
+_PLY_PROC     = "output/visualizations/airplane_reconstructed.ply"
 _STAGE_NAMES = {
     1: "网格预处理 & 特征点提取",
     2: "候选视点生成 & 覆盖质量评估",
@@ -112,12 +115,12 @@ def _get(stage: int) -> dict:
 
 
 def _load_mesh():
-    """从预处理 STL 重建 Open3D 网格和射线场景。"""
-    if not os.path.exists(_STL_PROC):
+    """从重建 PLY 加载 Open3D 网格和射线场景。"""
+    if not os.path.exists(_PLY_PROC):
         raise FileNotFoundError(
-            f"找不到预处理网格 {_STL_PROC}，请先运行 stage1()"
+            f"找不到重建网格 {_PLY_PROC}，请先运行 stage1()"
         )
-    mesh = o3d.io.read_triangle_mesh(_STL_PROC)
+    mesh = o3d.io.read_triangle_mesh(_PLY_PROC)
     mesh.compute_vertex_normals()
     mesh_t = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
     scene  = o3d.t.geometry.RaycastingScene()
@@ -143,11 +146,17 @@ def _sec(title: str) -> None:
 # 各阶段执行函数
 # ══════════════════════════════════════════════════════════════════════════════
 
-def stage1(force: bool = False) -> dict:
-    """阶段1：网格预处理 & PCA 特征点提取。
+def stage1(force: bool = False,
+           poisson_depth: int = 10,
+           shs_device: str = "auto",
+           shs_ckpt: str = None) -> dict:
+    """阶段1：PCD 点云预处理 — SHS-Net 法向估计 + Poisson 重建 + 自适应特征点提取。
 
     Args:
-        force: True 则忽略已有检查点，强制重新计算。
+        force:         True 则忽略已有检查点，强制重新计算。
+        poisson_depth: Screened Poisson 重建的八叉树深度（默认 10）。
+        shs_device:    SHS-Net 推理设备，"auto" 自动选择 GPU/CPU（默认 "auto"）。
+        shs_ckpt:      SHS-Net 预训练权重路径，None 则使用模块默认路径。
     Returns:
         {"pts": (N,3), "norms": (N,3)}
     """
@@ -159,7 +168,10 @@ def stage1(force: bool = False) -> dict:
         return _load(1)
     t0 = time.time()
     os.makedirs(_VIZ_DIR, exist_ok=True)
-    _, pts, norms, _ = load_and_preprocess_mesh(_STL_INPUT, _STL_PROC)
+    kwargs = dict(poisson_depth=poisson_depth, shs_device=shs_device)
+    if shs_ckpt is not None:
+        kwargs["shs_ckpt"] = shs_ckpt
+    _, pts, norms, _ = load_and_preprocess_pcd(_PCD_INPUT, _PLY_PROC, **kwargs)
     _save(1, {"pts": pts, "norms": norms})
     print(f"  耗时: {time.time()-t0:.1f}s")
     return _cache[1]

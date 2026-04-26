@@ -20,33 +20,42 @@
 
 ```
 UAV_Path_Planning/
-├── airplane_aligned.stl          # 输入：对齐好的飞机 STL 网格（必须存在）
+├── data/
+│   └── airplane_aligned.pcd          # 输入：对齐好的飞机点云（必须存在）
 │
-├── main.py                       # 主入口：流水线调度 + 断点续跑
-├── config.py                     # 全局参数配置（调参唯一入口）
+├── main.py                            # 主入口：流水线调度 + 断点续跑
+├── pipeline_api.py                    # Jupyter Notebook 统一 API
+├── pipeline.ipynb                     # 交互式操作面板
 │
-├── module_1_preprocessing.py     # 阶段1：网格清理 + PCA 自适应特征采样
-├── module_2_viewpoint.py         # 阶段2：候选视点生成 + 数字相机覆盖评估
-├── module_3_set_cover.py         # 阶段3：质量感知 Lazy Greedy 集合覆盖
-├── module_4_path_planning.py     # 阶段4：KMeans 任务分配 + 4D-TSP 排序
-├── module_5_trajectory_optimization.py  # 阶段5：体素A* + Catmull-Rom + CSV
+├── algorithms/
+│   ├── config.py                      # 全局参数配置（调参唯一入口）
+│   ├── module_1_preprocessing.py      # 阶段1：PCD → SHS-Net → Poisson 重建 + 自适应采样
+│   ├── module_2_viewpoint.py          # 阶段2：候选视点生成 + 数字相机覆盖评估
+│   ├── module_3_set_cover.py          # 阶段3：质量感知 Lazy Greedy 集合覆盖
+│   ├── module_4_path_planning.py      # 阶段4：KMeans 任务分配 + 4D-TSP 排序
+│   └── module_5_trajectory_optimization.py  # 阶段5：体素A* + Catmull-Rom + CSV
 │
-├── checkpoints/                  # 自动生成：各阶段中间检查点
-│   ├── stage_1.pkl
-│   ├── stage_2.pkl
-│   ├── stage_3.pkl
-│   └── stage_4.pkl
+├── third_party/
+│   └── SHS-Net/                       # SHS-Net 法向估计仓库（见安装说明）
+│       └── log/001/ckpts/ckpt_800.pt  # 预训练权重（随仓库自带）
 │
-├── trajectories/                 # 自动生成：PX4 飞控指令
-│   ├── uav_1_trajectory.csv
-│   ├── uav_2_trajectory.csv
-│   ├── uav_3_trajectory.csv
-│   └── uav_4_trajectory.csv
-│
-├── airplane_preprocessed.stl     # 自动生成（阶段1）
-├── 3_final_waypoints.ply         # 自动生成（阶段3）
-├── 4_topo_lines.ply              # 自动生成（阶段4）
-└── 5_final_trajectories.ply      # 自动生成（阶段5）
+├── output/
+│   ├── checkpoints/                   # 自动生成：各阶段中间检查点
+│   │   ├── stage_1.pkl
+│   │   ├── stage_2.pkl
+│   │   ├── stage_3.pkl
+│   │   └── stage_4.pkl
+│   ├── snapshots/                     # 命名实验快照（save_snapshot 产生）
+│   ├── trajectories/                  # 自动生成：PX4 飞控指令
+│   │   ├── uav_1_trajectory.csv
+│   │   ├── uav_2_trajectory.csv
+│   │   ├── uav_3_trajectory.csv
+│   │   └── uav_4_trajectory.csv
+│   └── visualizations/               # 自动生成：可视化文件
+│       ├── airplane_reconstructed.ply # 阶段1 Poisson 重建网格
+│       ├── 3_final_waypoints.ply      # 阶段3 精选航点
+│       ├── 4_topo_lines.ply           # 阶段4 拓扑路径
+│       └── 5_final_trajectories.ply   # 阶段5 平滑轨迹
 ```
 
 ---
@@ -54,6 +63,8 @@ UAV_Path_Planning/
 ## 2. 环境安装
 
 **Python 版本要求：** 3.8 ~ 3.11
+
+### 基础依赖
 
 ```bash
 pip install open3d numpy scipy scikit-learn ortools
@@ -67,13 +78,41 @@ pip install open3d numpy scipy scikit-learn ortools
 | `scikit-learn` | KMeans 任务聚类（模块4） | 1.0 |
 | `ortools` | Google OR-Tools TSP 求解器（模块4） | 9.4 |
 
+### SHS-Net 依赖（阶段1 新增）
+
+阶段1 使用 SHS-Net 进行有方向法向估计，需额外安装 PyTorch / Pytorch3D 并克隆仓库：
+
+```bash
+# 1. 安装 PyTorch（根据 CUDA 版本选择，详见 https://pytorch.org）
+pip install torch torchvision
+
+# 2. 安装 Pytorch3D（SHS-Net 内部依赖）
+pip install pytorch3d
+# 若 pip 安装失败，可参考官方文档从源码编译：
+# https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md
+
+# 3. 克隆 SHS-Net 仓库（预训练权重已包含在仓库内）
+cd UAV_Path_Planning
+mkdir -p third_party && cd third_party
+git clone https://github.com/LeoQLi/SHS-Net.git
+# 权重路径：third_party/SHS-Net/log/001/ckpts/ckpt_800.pt
+```
+
+| 库 | 用途 | 最低版本 |
+|---|---|---|
+| `torch` | SHS-Net 推理后端 | 1.8 |
+| `pytorch3d` | SHS-Net 内部几何运算 | 0.6 |
+| SHS-Net 仓库 | 有方向法向估计网络 | — |
+
+> **GPU 加速**：强烈建议配置 CUDA GPU。SHS-Net 在 CPU 上推理速度极慢（数万点可能需数小时），GPU 可将阶段1耗时压缩到 10~30 分钟。
+
 ---
 
 ## 3. 快速开始
 
 ### 前提
 
-将目标 STL 文件放置于项目根目录，命名为 `airplane_aligned.stl`。
+将目标点云文件放置于 `data/` 目录，命名为 `airplane_aligned.pcd`。
 
 ### 完整运行（一键执行全部 5 个阶段）
 
@@ -92,18 +131,32 @@ python main.py
 ================================================================
   阶段 1 / 5 : 网格预处理 & 特征点提取
 ================================================================
-[Module 1] 启动预处理与特征提取 (airplane_aligned.stl)...
- -> 正在清理底层网格并提取顶点法向...
- -> 正在执行向量化 PCA 曲率计算与自适应采样...
-    KDTree 批量近邻查询完成，耗时 12.3s
-[Module 1] 预处理完成！特征点数: 12847  耗时: 45.2s
-  [Checkpoint] 阶段 1 已保存 -> checkpoints/stage_1.pkl  (1.2 MB)
-  [阶段 1 完成] 耗时 46.1s
+
+[Module 1] 启动预处理与特征提取 (data/airplane_aligned.pcd) ...
+ -> 正在读取点云文件: data/airplane_aligned.pcd
+    原始点云点数: 150243
+ -> 正在加载 SHS-Net 模型: third_party/SHS-Net/log/001/ckpts/ckpt_800.pt
+    推理设备: cuda:0
+    模型加载完成，参数量: 1,234,567
+ -> SHS-Net 推理中 (N=150243, patch=700, sample=700, batch=500) ...
+    批量近邻查询 (预估 1.2 GB) ...
+    KDTree 近邻查询完成, 耗时 45.2s
+    [100.0%] 150243/150243 点已处理, 已用时 823.4s
+ -> SHS-Net 推理完成, 总耗时: 823.4s
+ -> 正在执行 Screened Poisson 表面重建 (depth=10) ...
+    重建完成: 48291 顶点, 96584 三角面元, 耗时 12.3s
+    重建网格已保存: output/visualizations/airplane_reconstructed.ply
+ -> 正在构建射线投射场景 (RaycastingScene) ...
+ -> 正在执行向量化 PCA 曲率计算 (N=150243, K=30) ...
+ -> 自适应降采样 (阈值=0.015, 高曲率保留=50%, 低曲率保留=10%) ...
+    降采样后总特征点数: 23456
+
+[Module 1] 预处理完成！特征点数: 23456  总耗时: 912.1s
+  [Checkpoint] 阶段 1 已保存 -> output/checkpoints/stage_1.pkl  (1.8 MB)
+  [阶段 1 完成] 耗时 912.8s
 ...
 ================================================================
-  流水线完成！总耗时: 831.4s
-  轨迹 CSV: trajectories/uav_{1-4}_trajectory.csv
-  可视化:  5_final_trajectories.ply
+  流水线完成！总耗时: 2431.4s
 ================================================================
 ```
 
@@ -112,7 +165,7 @@ python main.py
 推荐使用 **CloudCompare**（免费）打开 PLY 文件：
 
 ```
-File → Open → 选择 5_final_trajectories.ply
+File → Open → 选择 output/visualizations/5_final_trajectories.ply
 ```
 
 ---
@@ -145,14 +198,14 @@ python main.py --list-checkpoints
 **场景 A：首次运行，阶段2执行到一半中断**
 
 ```bash
-# 重新从头运行（阶段1已有检查点则跳过）
-python main.py --from-stage 1
+# 重新从阶段2恢复（阶段1已有检查点则跳过）
+python main.py --from-stage 2
 ```
 
 **场景 B：调整覆盖质量阈值，重跑阶段3及之后**
 
 ```bash
-# 1. 修改 module_3_set_cover.py 中的 quality_threshold_ratio
+# 1. 修改 algorithms/module_3_set_cover.py 中的 quality_threshold_ratio
 # 2. 从阶段3恢复（无需重跑耗时的阶段1、2）
 python main.py --from-stage 3
 ```
@@ -160,7 +213,7 @@ python main.py --from-stage 3
 **场景 C：调整飞行安全距离，只重跑轨迹生成**
 
 ```bash
-# 1. 修改 config.py 中的 FLIGHT_SAFE_RADIUS
+# 1. 修改 algorithms/config.py 中的 FLIGHT_SAFE_RADIUS
 # 2. 只重新生成轨迹 CSV
 python main.py --from-stage 5
 ```
@@ -168,28 +221,28 @@ python main.py --from-stage 5
 **场景 D：调整无人机数量，重新分配任务**
 
 ```bash
-# 1. 修改 config.py 中的 NUM_UAVS 和 TAKEOFF_POINTS
+# 1. 修改 algorithms/config.py 中的 NUM_UAVS 和 TAKEOFF_POINTS
 # 2. 从阶段4重跑
 python main.py --from-stage 4
 ```
 
 ### 各阶段耗时参考
 
-| 阶段 | 内容 | 典型耗时 | 检查点大小 |
-|---|---|---|---|
-| 1 | 网格清理 + PCA 特征采样 | 1 ~ 3 min | ~1 MB |
-| 2 | 视点生成 + 相机仿真覆盖评估 | 5 ~ 20 min | ~50 MB |
-| 3 | Lazy Greedy 集合覆盖优化 | 10 ~ 60 s | ~1 MB |
-| 4 | KMeans + OR-Tools TSP | 30 ~ 120 s | ~1 MB |
-| 5 | 体素A* + Catmull-Rom + CSV | 5 ~ 30 min | — |
+| 阶段 | 内容 | 典型耗时（GPU） | 典型耗时（CPU） | 检查点大小 |
+|---|---|---|---|---|
+| 1 | PCD → SHS-Net 法向 → Poisson 重建 → 自适应采样 | 10 ~ 30 min | 数小时 | ~2 MB |
+| 2 | 视点生成 + 相机仿真覆盖评估 | 5 ~ 20 min | 5 ~ 20 min | ~50 MB |
+| 3 | Lazy Greedy 集合覆盖优化 | 10 ~ 60 s | 10 ~ 60 s | ~1 MB |
+| 4 | KMeans + OR-Tools TSP | 30 ~ 120 s | 30 ~ 120 s | ~1 MB |
+| 5 | 体素A* + Catmull-Rom + CSV | 5 ~ 30 min | 5 ~ 30 min | — |
 
-> 阶段2是全流程最耗时的步骤（视点数量越多耗时越长），建议完成后务必保存检查点再调试下游模块。
+> 阶段1（SHS-Net 推理）和阶段2是全流程最耗时的步骤，建议在 GPU 机器上运行阶段1，完成后保存检查点再调试下游模块。
 
 ---
 
 ## 5. 参数调整
 
-所有参数集中在 `config.py`，按模块分区标注。
+所有参数集中在 `algorithms/config.py`，按模块分区标注。
 
 ### 成像参数（影响阶段2）
 
@@ -248,9 +301,10 @@ VOXEL_SIZE           = 0.5   # A* 体素分辨率（米）
 
 | 文件 | 内容 | 打开方式 |
 |---|---|---|
-| `3_final_waypoints.ply` | 最终拍照航点（橙色） | CloudCompare / MeshLab |
-| `4_topo_lines.ply` | 4架无人机的拓扑路径（各色） | CloudCompare / MeshLab |
-| `5_final_trajectories.ply` | 最终平滑轨迹（白色=视点，彩色=转场） | CloudCompare / MeshLab |
+| `output/visualizations/airplane_reconstructed.ply` | 阶段1 Poisson 重建三角网格 | CloudCompare / MeshLab |
+| `output/visualizations/3_final_waypoints.ply` | 最终拍照航点（橙色） | CloudCompare / MeshLab |
+| `output/visualizations/4_topo_lines.ply` | 4架无人机的拓扑路径（各色） | CloudCompare / MeshLab |
+| `output/visualizations/5_final_trajectories.ply` | 最终平滑轨迹（白色=视点，彩色=转场） | CloudCompare / MeshLab |
 
 ### CSV 轨迹文件（飞控指令）
 
@@ -288,7 +342,7 @@ timestamp_s, x, y, z, yaw_rad, type
 
 **Q：阶段2报错"未能生成任何合法候选视点"**
 
-调整 `config.py` 中的安全半径：
+调整 `algorithms/config.py` 中的安全半径：
 ```python
 SAFE_RADIUS = 2.0           # 从 3.0 适当缩小
 UNDERBELLY_SAFE_RADIUS = 0.8
@@ -309,7 +363,7 @@ VOXEL_SIZE = 0.3            # 从 0.5 缩小提高搜索精度（耗时增加）
 **Q：想从 1 架无人机开始测试**
 
 ```python
-# config.py
+# algorithms/config.py
 NUM_UAVS = 1
 TAKEOFF_POINTS = [[20.0, 20.0, 0.5]]
 ```
@@ -321,30 +375,57 @@ python main.py --from-stage 4
 
 ---
 
-**Q：阶段1 PCA 计算太慢**
+**Q：阶段1 SHS-Net 推理太慢**
 
-减少初始采样点数（在 `module_1_preprocessing.py` 第 33 行）：
-```python
-base_pcd = mesh.sample_points_uniformly(number_of_points=200_000)  # 原为 500_000
+SHS-Net 对 GPU 依赖较强，以下方法可缩短耗时：
+
+1. **使用 GPU**（最有效）：确认 PyTorch 已正确安装 CUDA 版本，推理设备会自动选择 GPU。  
+   在 Jupyter 中可指定设备：
+   ```python
+   stage1(shs_device="cuda:0")
+   ```
+
+2. **减小推理批量**（降低显存占用，对速度影响较小）：  
+   在 `algorithms/module_1_preprocessing.py` 中调整：
+   ```python
+   BATCH_SIZE = 200   # SHSNetEstimator 类属性，原为 500
+   ```
+
+3. **降低 Poisson 重建精度**（加快网格重建，轻微影响几何细节）：
+   ```python
+   stage1(poisson_depth=8)   # 原为 10，8 对应 256³ 分辨率
+   ```
+
+---
+
+**Q：SHS-Net 报错找不到权重文件**
+
+确认 SHS-Net 仓库已克隆且路径正确：
+```bash
+ls third_party/SHS-Net/log/001/ckpts/ckpt_800.pt
 ```
-
-或缩小近邻数 K（同文件第 37 行）：
-```python
-K = 15   # 原为 30
+若文件不存在，重新克隆：
+```bash
+cd third_party
+git clone https://github.com/LeoQLi/SHS-Net.git
+```
+也可通过环境变量指定自定义路径：
+```bash
+export SHS_NET_CKPT=/path/to/your/ckpt_800.pt
 ```
 
 ---
 
 **Q：如何验证轨迹没有碰撞**
 
-打开 `5_final_trajectories.ply` 与 `airplane_preprocessed.stl`，在 CloudCompare 中叠加显示，检查彩色轨迹是否与灰色网格有交叉。
+打开 `output/visualizations/5_final_trajectories.ply` 与 `output/visualizations/airplane_reconstructed.ply`，在 CloudCompare 中叠加显示，检查彩色轨迹是否与灰色网格有交叉。
 
 ---
 
-**Q：`checkpoints/` 目录占用空间过大**
+**Q：`output/checkpoints/` 目录占用空间过大**
 
 阶段2的检查点（`stage_2.pkl`）包含完整覆盖质量矩阵，通常最大（50~200 MB）。确认阶段2结果满意后，可以只保留 `stage_4.pkl` 删除其余：
 
 ```bash
-rm checkpoints/stage_1.pkl checkpoints/stage_2.pkl checkpoints/stage_3.pkl
+rm output/checkpoints/stage_1.pkl output/checkpoints/stage_2.pkl output/checkpoints/stage_3.pkl
 ```

@@ -20,7 +20,7 @@ import numpy as np
 import open3d as o3d
 
 from algorithms.config import Config
-from algorithms.module_1_preprocessing import load_and_preprocess_mesh
+from algorithms.module_1_preprocessing import load_and_preprocess_pcd
 from algorithms.module_2_viewpoint import ViewpointGenerator
 from algorithms.module_3_set_cover import QualityAwareSetCover
 from algorithms.module_4_path_planning import MultiUAVPlanner
@@ -32,8 +32,8 @@ from algorithms.module_5_trajectory_optimization import (
 
 CHECKPOINT_DIR = "output/checkpoints"
 VIZ_DIR        = "output/visualizations"
-STL_INPUT      = "data/airplane_aligned.stl"
-STL_PROCESSED  = "output/visualizations/airplane_preprocessed.stl"
+PCD_INPUT      = "data/airplane_aligned.pcd"
+PLY_PROCESSED  = "output/visualizations/airplane_reconstructed.ply"
 
 STAGE_NAMES = {
     1: "网格预处理 & 特征点提取",
@@ -104,14 +104,14 @@ def list_checkpoints() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_processed_mesh():
-    """从预处理 STL 加载网格并重建射线场景（供阶段 2 / 4 / 5 使用）。"""
-    if not os.path.exists(STL_PROCESSED):
+    """从重建 PLY 加载网格并重建射线场景（供阶段 2 / 4 / 5 使用）。"""
+    if not os.path.exists(PLY_PROCESSED):
         raise FileNotFoundError(
-            f"\n[错误] 找不到预处理网格: {STL_PROCESSED}\n"
+            f"\n[错误] 找不到重建网格: {PLY_PROCESSED}\n"
             "  请先运行:  python main.py --to-stage 1\n"
         )
-    print(f"  [Main] 正在加载预处理网格: {STL_PROCESSED}")
-    mesh = o3d.io.read_triangle_mesh(STL_PROCESSED)
+    print(f"  [Main] 正在加载重建网格: {PLY_PROCESSED}")
+    mesh = o3d.io.read_triangle_mesh(PLY_PROCESSED)
     mesh.compute_vertex_normals()
     mesh_t    = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
     ray_scene = o3d.t.geometry.RaycastingScene()
@@ -132,13 +132,13 @@ def _print_stage_header(stage: int) -> float:
 
 def run_stage_1() -> dict:
     """
-    阶段 1：网格预处理与自适应特征点提取。
-    输入 : airplane_aligned.stl
+    阶段 1：PCD 点云预处理与自适应特征点提取。
+    输入 : airplane_aligned.pcd
     输出 : pts (N,3), norms (N,3)
-    副产品: airplane_preprocessed.stl
+    副产品: airplane_reconstructed.ply（Poisson 重建网格）
     """
     os.makedirs(VIZ_DIR, exist_ok=True)
-    mesh, pts, norms, _ = load_and_preprocess_mesh(STL_INPUT, STL_PROCESSED)
+    mesh, pts, norms, _ = load_and_preprocess_pcd(PCD_INPUT, PLY_PROCESSED)
     return {"pts": pts, "norms": norms}
 
 
@@ -317,7 +317,7 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 各阶段说明：
-  阶段 1  网格预处理 & 特征点提取       → airplane_preprocessed.stl
+  阶段 1  PCD 预处理 & 特征点提取        → airplane_reconstructed.ply（Poisson 重建网格）
   阶段 2  候选视点生成 & 覆盖质量评估   → checkpoints/stage_2.pkl
   阶段 3  质量感知集合覆盖优化          → 3_final_waypoints.ply
   阶段 4  多机任务分配 & TSP 拓扑排序   → 4_topo_lines.ply
