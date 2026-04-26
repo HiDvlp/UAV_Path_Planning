@@ -15,7 +15,9 @@
 # 依赖项（除项目原有依赖外）：
 #   - SHS-Net 代码仓库：git clone https://github.com/LeoQLi/SHS-Net.git
 #     将其路径添加到 PYTHONPATH 或放在项目 third_party/ 目录下
-#   - PyTorch >= 1.8, Pytorch3D >= 0.6（SHS-Net 依赖）
+#   - PyTorch >= 1.8
+#   - Pytorch3D >= 0.6（可选）：若未安装，自动使用 third_party/pytorch3d_stub/
+#     中的纯 PyTorch CPU 替代实现（仅实现 knn_points，无需编译）
 
 import os
 import sys
@@ -49,7 +51,9 @@ SHS_NET_CKPT = os.environ.get("SHS_NET_CKPT", os.path.join(
 
 
 def _ensure_shs_net_available():
-    """验证 SHS-Net 代码和权重是否就位，给出可操作的错误提示。"""
+    """验证 SHS-Net 代码和权重是否就位，给出可操作的错误提示。
+    若 pytorch3d 未安装，自动注入纯 PyTorch 的 CPU stub 以替代。
+    """
     if not os.path.isdir(SHS_NET_ROOT):
         raise FileNotFoundError(
             f"[Module 1] 找不到 SHS-Net 代码仓库: {SHS_NET_ROOT}\n"
@@ -65,6 +69,25 @@ def _ensure_shs_net_available():
             f"[Module 1] SHS-Net 目录结构不完整, 缺少 net/network.py: {SHS_NET_ROOT}\n"
             f"  请确认 SHS_NET_ROOT 指向包含 net/ 子目录的仓库根目录。"
         )
+
+    # ── pytorch3d stub：若未安装真正的 pytorch3d，注入纯 PyTorch CPU 替代 ──
+    try:
+        import pytorch3d  # noqa: F401
+    except ImportError:
+        _STUB_ROOT = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "third_party", "pytorch3d_stub"
+        )
+        _STUB_ROOT = os.path.normpath(_STUB_ROOT)
+        if os.path.isdir(_STUB_ROOT) and _STUB_ROOT not in sys.path:
+            sys.path.insert(0, _STUB_ROOT)
+            print(" -> pytorch3d 未安装，已注入纯 PyTorch CPU stub (third_party/pytorch3d_stub)")
+        elif not os.path.isdir(_STUB_ROOT):
+            raise ImportError(
+                "[Module 1] pytorch3d 未安装且找不到 CPU stub。\n"
+                "  请运行: pip install pytorch3d\n"
+                "  或确认 third_party/pytorch3d_stub/ 目录存在。"
+            )
+
     if SHS_NET_ROOT not in sys.path:
         sys.path.insert(0, SHS_NET_ROOT)
 
