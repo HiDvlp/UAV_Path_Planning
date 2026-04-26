@@ -35,6 +35,9 @@ UAV_Path_Planning/
 │   ├── module_4_path_planning.py      # 阶段4：KMeans 任务分配 + 4D-TSP 排序
 │   └── module_5_trajectory_optimization.py  # 阶段5：体素A* + Catmull-Rom + CSV
 │
+├── scenes/
+│   └── default_scene.json             # 场景参数（起飞点、UAV 数量、地理锚点）
+│
 ├── third_party/
 │   └── SHS-Net/                       # SHS-Net 法向估计仓库（见安装说明）
 │       └── log/001/ckpts/ckpt_800.pt  # 预训练权重（随仓库自带）
@@ -121,44 +124,7 @@ cd UAV_Path_Planning
 python main.py
 ```
 
-运行完成后终端输出示例：
-
-```
-================================================================
-  UAV 路径规划流水线  |  阶段 1 → 5
-================================================================
-
-================================================================
-  阶段 1 / 5 : 网格预处理 & 特征点提取
-================================================================
-
-[Module 1] 启动预处理与特征提取 (data/airplane_aligned.pcd) ...
- -> 正在读取点云文件: data/airplane_aligned.pcd
-    原始点云点数: 150243
- -> 正在加载 SHS-Net 模型: third_party/SHS-Net/log/001/ckpts/ckpt_800.pt
-    推理设备: cuda:0
-    模型加载完成，参数量: 1,234,567
- -> SHS-Net 推理中 (N=150243, patch=700, sample=700, batch=500) ...
-    批量近邻查询 (预估 1.2 GB) ...
-    KDTree 近邻查询完成, 耗时 45.2s
-    [100.0%] 150243/150243 点已处理, 已用时 823.4s
- -> SHS-Net 推理完成, 总耗时: 823.4s
- -> 正在执行 Screened Poisson 表面重建 (depth=10) ...
-    重建完成: 48291 顶点, 96584 三角面元, 耗时 12.3s
-    重建网格已保存: output/visualizations/airplane_reconstructed.ply
- -> 正在构建射线投射场景 (RaycastingScene) ...
- -> 正在执行向量化 PCA 曲率计算 (N=150243, K=30) ...
- -> 自适应降采样 (阈值=0.015, 高曲率保留=50%, 低曲率保留=10%) ...
-    降采样后总特征点数: 23456
-
-[Module 1] 预处理完成！特征点数: 23456  总耗时: 912.1s
-  [Checkpoint] 阶段 1 已保存 -> output/checkpoints/stage_1.pkl  (1.8 MB)
-  [阶段 1 完成] 耗时 912.8s
-...
-================================================================
-  流水线完成！总耗时: 2431.4s
-================================================================
-```
+运行完成后，各阶段输出自动写入 `output/` 目录，详见 §6 输出文件说明。
 
 ### 查看结果
 
@@ -205,8 +171,11 @@ python main.py --from-stage 2
 **场景 B：调整覆盖质量阈值，重跑阶段3及之后**
 
 ```bash
-# 1. 修改 algorithms/module_3_set_cover.py 中的 quality_threshold_ratio
-# 2. 从阶段3恢复（无需重跑耗时的阶段1、2）
+# Notebook 中（推荐）：
+stage3(force=True, quality_threshold=0.7)   # 调低阈值，航点更少
+run("4-5")
+
+# 命令行：在 main.py 的 run_stage_3 调用处修改 quality_threshold_ratio 参数，再执行：
 python main.py --from-stage 3
 ```
 
@@ -251,6 +220,7 @@ CAMERA_DISTANCE      = 5.0   # 常规拍摄距离（米）
 UNDERBELLY_CAMERA_DIST = 3.0 # 机腹专属拍摄距离（米）
 FOV_DEG              = 90.0  # 水平视场角（度）
 MAX_INCIDENCE_ANGLE  = 45.0  # 最大允许拍摄入射角（度）
+DIST_SCORE_SIGMA2    = 8.0   # 距离质量分高斯衰减方差 σ²；调大→对拍摄距离偏差更宽容
 ```
 
 > 增大 `FOV_DEG` → 每个视点覆盖面积更大 → 最终航点更少  
@@ -271,15 +241,12 @@ MIN_SAFE_Z           = 0.5   # 最低飞行高度（米）
 
 ```python
 NUM_UAVS             = 4
-TAKEOFF_POINTS       = [
-    [ 20.0,  20.0, 0.5],
-    [ 20.0, -20.0, 0.5],
-    [-20.0,  20.0, 0.5],
-    [-20.0, -20.0, 0.5],
-]
+TAKEOFF_POINTS       = [...]  # 见 scenes/default_scene.json
 WEIGHT_CLIMB         = 3.0   # TSP 爬升代价权重
 WEIGHT_TURN          = 2.0   # TSP 偏航代价权重
 ```
+
+> 换场景时推荐编辑 `scenes/default_scene.json` 中的 `TAKEOFF_POINTS` 和 `NUM_UAVS` 字段，无需修改源码。Notebook 中 `from pipeline_api import *` 时会自动调用 `Config.load_scene()` 读取该文件。
 
 ### 轨迹参数（影响阶段5）
 
@@ -362,14 +329,14 @@ VOXEL_SIZE = 0.3            # 从 0.5 缩小提高搜索精度（耗时增加）
 
 **Q：想从 1 架无人机开始测试**
 
-```python
-# algorithms/config.py
-NUM_UAVS = 1
-TAKEOFF_POINTS = [[20.0, 20.0, 0.5]]
+编辑 `scenes/default_scene.json`：
+```json
+{ "NUM_UAVS": 1, "TAKEOFF_POINTS": [[20.0, 20.0, 0.5]] }
 ```
 
-然后从阶段4重跑：
+Notebook 中重新运行初始化格（或调用 `Config.load_scene()`），再从阶段4重跑：
 ```bash
+# 命令行
 python main.py --from-stage 4
 ```
 
